@@ -19,14 +19,129 @@ import matplotlib.backends.backend_tkagg as tkagg
 from matplotlib.figure import Figure
 import nidaqmx
 import nidaqmx.constants as nico
-from nidaqmx.stream_readers import AnalogSingleChannelReader
+from nidaqmx.stream_readers import AnalogMultiChannelReader
 
 
 __author__ = "Jaimy Plugge"
 
 
-FONT=(35)
-TEXTVARIABLE_FONT = (20)
+class Picker(ttk.Frame):
+
+    def __init__(self, master=None,activebackground='#b1dcfb',values=[],entry_wid=None,activeforeground='black', selectbackground='#003eff', selectforeground='white', command=None, borderwidth=1, relief="solid"):
+
+        self._selected_item = None
+
+        self._values = values
+
+        self._entry_wid = entry_wid
+
+        self._sel_bg = selectbackground 
+        self._sel_fg = selectforeground
+
+        self._act_bg = activebackground 
+        self._act_fg = activeforeground
+
+        self._command = command
+        ttk.Frame.__init__(self, master, borderwidth=borderwidth, relief=relief)
+
+        self.bind("<FocusIn>", lambda event:self.event_generate('<<PickerFocusIn>>'))
+        self.bind("<FocusOut>", lambda event:self.event_generate('<<PickerFocusOut>>'))
+
+        self.dict_checkbutton = {}
+        self.dict_checkbutton_var = {}
+        self.dict_intvar_item = {}
+
+        for index,item in enumerate(self._values):
+
+            self.dict_intvar_item[item] = tk.IntVar()
+            self.dict_checkbutton[item] = ttk.Checkbutton(self, text = item, variable=self.dict_intvar_item[item],command=lambda ITEM = item:self._command(ITEM))
+            self.dict_checkbutton[item].grid(row=index, column=0, sticky=tk.NSEW)
+            self.dict_intvar_item[item].set(0)
+
+
+class Combopicker(ttk.Entry, Picker):
+    def __init__(self, master, values= [] ,entryvar=None, entrywidth=None, entrystyle=None, onselect=None,activebackground='#b1dcfb', activeforeground='black', selectbackground='#003eff', selectforeground='white', borderwidth=1, relief="solid"):
+
+        if entryvar is not None:
+            self.entry_var = entryvar
+        else:
+            self.entry_var = tk.StringVar()
+
+        entry_config = {}
+        if entrywidth is not None:
+            entry_config["width"] = entrywidth
+
+        if entrystyle is not None:
+            entry_config["style"] = entrystyle
+
+        ttk.Entry.__init__(self, master, textvariable=self.entry_var, **entry_config, state = "readonly")
+
+        self._is_menuoptions_visible = False
+
+        self.picker_frame = Picker(self.winfo_toplevel(), values=values,entry_wid = self.entry_var,activebackground=activebackground, activeforeground=activeforeground, selectbackground=selectbackground, selectforeground=selectforeground, command=self._on_selected_check)
+
+        self.bind_all("<1>", self._on_click, "+")
+
+        self.bind("<Escape>", lambda event: self.hide_picker())
+
+    @property
+    def current_value(self):
+        try:
+            value = self.entry_var.get()
+            return value
+        except ValueError:
+            return None
+
+    @current_value.setter
+    def current_value(self, INDEX):
+        self.entry_var.set(values.index(INDEX))
+
+    def _on_selected_check(self, SELECTED):
+
+        value = []
+        if self.entry_var.get() != "" and self.entry_var.get() != None:
+            temp_value = self.entry_var.get()
+            value = temp_value.split(",")
+
+        if str(SELECTED) in value:
+            value.remove(str(SELECTED))
+
+        else:    
+            value.append(str(SELECTED))
+
+        value.sort()
+
+        temp_value = ""
+        for index,item in enumerate(value):
+            if item!= "":
+                if index != 0:
+                    temp_value += ","
+                temp_value += str(item)
+
+        self.entry_var.set(temp_value)
+
+    def _on_click(self, event):
+        str_widget = str(event.widget)
+
+        if str_widget == str(self):
+            if not self._is_menuoptions_visible:
+                self.show_picker()
+        else:
+            if not str_widget.startswith(str(self.picker_frame)) and self._is_menuoptions_visible:
+                self.hide_picker()
+
+    def show_picker(self):
+        if not self._is_menuoptions_visible:
+            self.picker_frame.place(in_=self, relx=0, rely=1, relwidth=1 )
+            self.picker_frame.lift()
+
+        self._is_menuoptions_visible = True
+
+    def hide_picker(self):
+        if self._is_menuoptions_visible:
+            self.picker_frame.place_forget()
+
+        self._is_menuoptions_visible = False
 
 
 class Reader: 
@@ -49,7 +164,7 @@ class Reader:
         self.termconfig = termconfig
         self.callback = callback
 
-        self.data_in = np.zeros((self.settings["sample block size"]),'d')
+        self.data_in = np.zeros((self.physical_channels.count(",")+1, self.settings["sample block size"]),'d')
 
     def configure_task(self):
         self.task = nidaqmx.Task()
@@ -64,7 +179,7 @@ class Reader:
             sample_mode= nico.AcquisitionType.CONTINUOUS,
             samps_per_chan=10*self.sample_rate)
 
-        self.channel_reader = AnalogSingleChannelReader(self.task.in_stream)
+        self.channel_reader = AnalogMultiChannelReader(self.task.in_stream)
 
     def start_reading(self):
         self.task.register_every_n_samples_acquired_into_buffer_event(
@@ -109,7 +224,7 @@ class Mainwindow:
                 'Error: Could not find a DAQ connected to your device.')
 
         self.phys_chans = tk.StringVar()
-        self.phys_chans.set(self.channellist[0])
+        #self.phys_chans.set(self.channellist[0])
 
         self.sample_rate = tk.StringVar()
         self.sample_rate.set("200k")
@@ -156,54 +271,53 @@ class Mainwindow:
         xpad = (5,5)
         ypad = (2,2)
 
-        controlsframelabel = ttk.Label(text="Controls", font=FONT, 
+        controlsframelabel = ttk.Label(text="Controls", 
                                        foreground="black")
         controlsframe = ttk.LabelFrame(self.mainwindow, 
                                        labelwidget=controlsframelabel, 
                                        relief=self.relief)
-        controlsframe.grid(row=0, column=0, padx=self.xpadding, 
-                           pady=self.ypadding, sticky="nsew")
+        controlsframe.pack(side="left")
 
-        lbl_tdms_folder = tk.Label(master=controlsframe, text="TDMS Folder", 
-                                   font=FONT)
+        lbl_tdms_folder = tk.Label(master=controlsframe, text="TDMS Folder")
         self.entry_tdms_folder = tk.Entry(master=controlsframe, 
-                                        width=width_names, font=FONT)
-        btn_folder = tk.Button(master=controlsframe, text="Browse", font=FONT, 
+                                        width=width_names)
+        btn_folder = tk.Button(master=controlsframe, text="Browse", 
                                command=self.openfolder)
 
         self.tdms_filename_var = tk.StringVar()
         self.tdms_filename_var.set("Choose Folder")
-        lbl_tdms_filename = tk.Label(master=controlsframe, text="TDMS Filename", 
-                                     font=FONT)
+        lbl_tdms_filename = tk.Label(master=controlsframe, text="TDMS Filename")
         lbl_tdms_filename_display = tk.Label(
             master=controlsframe, textvariable=self.tdms_filename_var, 
-            font=TEXTVARIABLE_FONT, relief=tk.SUNKEN, anchor='w', width=50)
+            relief=tk.SUNKEN, anchor='w', width=50)
 
         self.amount_samples_var = tk.IntVar()
         self.amount_samples_var.set(0)
         lbl_amount_samples = tk.Label(master=controlsframe, 
-                                      text="# Samples in File", font=FONT)
+                                      text="# Samples in File")
         lbl_amount_samples_display = tk.Label(
             master=controlsframe, textvariable=self.amount_samples_var, 
-            font=TEXTVARIABLE_FONT, relief=tk.SUNKEN, anchor='w')
+            relief=tk.SUNKEN, anchor='w')
 
         lbl_max_samplesfile = tk.Label(master=controlsframe, 
-                                       text="Max Samples/File", font=FONT)
+                                       text="Max Samples/File")
         entry_max_samplesfile = tk.Entry(master=controlsframe, 
                                          width=width_number, 
-                                         textvariable=self.max_samples_file, 
-                                         font=FONT)
+                                         textvariable=self.max_samples_file)
 
-        lbl_phys_chan = tk.Label(master=controlsframe, text="Physical Channel", 
-                                 font=FONT)
-        self.combo_phys_chan = ttk.Combobox(master=controlsframe, 
-                                            values=self.channellist, 
-                                            textvariable=self.phys_chans, 
-                                            font=FONT)
-        self.combo_phys_chan.set(self.phys_chans.get())
-        self.combo_phys_chan['state'] = 'readonly'
+        lbl_phys_chan = tk.Label(master=controlsframe, text="Physical Channel")
+        self.combo_phys_chan = Combopicker(master=controlsframe, 
+                                           values =self.channellist, 
+                                           entryvar=self.phys_chans,
+                                           entrywidth=25)
 
-        lbl_range = tk.Label(master=controlsframe, text="Range", font=FONT)
+        # self.combo_phys_chan = ttk.Combobox(master=controlsframe, 
+        #                                     values=self.channellist, 
+        #                                     textvariable=self.phys_chans)
+        # self.combo_phys_chan.set(self.phys_chans.get())
+        # self.combo_phys_chan['state'] = 'readonly'
+
+        lbl_range = tk.Label(master=controlsframe, text="Range")
         self.rangedict = {"+1 / -1": (-1,1), 
                           "+5 / -5": (-5,5), 
                           "+10 / -10": (-10,10)
@@ -213,22 +327,20 @@ class Mainwindow:
         combo_range = ttk.Combobox(master=controlsframe, 
                                    values=list(self.rangedict.keys()), 
                                    width=width_number, 
-                                   textvariable=self.rangevar, font=FONT)
+                                   textvariable=self.rangevar)
         combo_range.set(self.rangevar.get())
         combo_range['state'] = 'readonly'
 
         lbl_samps_per_chan = tk.Label(master=controlsframe, 
-                                      text="Samples/Channel", font=FONT)
+                                      text="Samples/Channel")
         entry_samps_per_chan = tk.Entry(master=controlsframe, width=width_number,
-                                        textvariable=self.sample_chan, font=FONT)
+                                        textvariable=self.sample_chan)
 
-        lbl_sample_rate = tk.Label(master=controlsframe, text="Sample Rate", 
-                                   font=FONT)
+        lbl_sample_rate = tk.Label(master=controlsframe, text="Sample Rate")
         entry_sample_rate = tk.Entry(master=controlsframe, width=width_number, 
-                                     textvariable=self.sample_rate, font=FONT)
+                                     textvariable=self.sample_rate)
                                      
-        lbl_termconfig = tk.Label(master=controlsframe, text="Terminal configuration", 
-                                   font=FONT)
+        lbl_termconfig = tk.Label(master=controlsframe, text="Terminal configuration")
         self.termconfigdict = {"Default": nico.TerminalConfiguration.DEFAULT,
  							   "Differential": nico.TerminalConfiguration.DIFF, 
  							   #"Differential": nico.TerminalConfiguration.BAL_DIFF, 
@@ -240,16 +352,16 @@ class Mainwindow:
         combo_termconfig = ttk.Combobox(master=controlsframe, 
                                         values=list(self.termconfigdict.keys()), 
                                         width=width_number, 
-                                        textvariable=self.termconfigvar, font=FONT)
+                                        textvariable=self.termconfigvar)
         combo_termconfig.set(self.termconfigvar.get())
         combo_termconfig['state'] = 'readonly'
 
         self.btn_logging = tk.Button(master=controlsframe, text="Logging", 
-                                     font=FONT, command=self.logging_toggle, 
+                                     command=self.logging_toggle, 
                                      bg="red")
         self.btn_start = tk.Button(master=controlsframe, text="Start", 
-                                   font=FONT, command=self.start_reading)
-        self.btn_stop = tk.Button(master=controlsframe, text="Stop", font=FONT, 
+                                   command=self.start_reading)
+        self.btn_stop = tk.Button(master=controlsframe, text="Stop", 
                                   command=self.stop_reading)
 
         self.btn_logging.config(state="disabled")
@@ -280,12 +392,11 @@ class Mainwindow:
         self.btn_stop.grid(row=6,column=3,sticky="nsew",columnspan=2,padx=xpad,pady=ypad)
 
     def plot_frame(self):
-        dataframelabel = ttk.Label(text="Data written to TDMS", font=FONT, 
+        dataframelabel = ttk.Label(text="Data written to TDMS", 
                                    foreground="black")
         dataframe = ttk.LabelFrame(self.mainwindow, labelwidget=dataframelabel, 
                                    relief=self.relief)
-        dataframe.grid(row=0, column=1, padx=self.xpadding, pady=self.ypadding, 
-                       sticky="nsew")
+        dataframe.pack(expand=True, fill="both", side="right")
 
         self.fig = Figure(figsize=(12,3), tight_layout=True)
         self.axs = self.fig.add_subplot(111)
@@ -295,7 +406,7 @@ class Mainwindow:
 
         self.canvas = tkagg.FigureCanvasTkAgg(self.fig, master=dataframe)
         self.canvas.draw()
-        self.canvas.get_tk_widget().pack()
+        self.canvas.get_tk_widget().pack(expand=True, fill="both", side="top")
 
         self.navtoolbar = tkagg.NavigationToolbar2Tk(self.canvas, dataframe)
 
@@ -388,7 +499,8 @@ class Mainwindow:
             number_of_samples_per_channel=self.reader.settings["sample block size"], 
             timeout=nidaqmx.constants.WAIT_INFINITELY)
         self.axs.cla()
-        self.axs.plot(self.x_axis, self.reader.data_in)
+        for row in self.reader.data_in:
+            self.axs.plot(self.x_axis, row)
         self.axs.set_xlabel('Time [s]')
         self.axs.set_ylabel('Amplitude [V]')
         self.axs.grid()
