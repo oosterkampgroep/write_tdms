@@ -17,12 +17,45 @@ import ctypes
 import numpy as np
 import matplotlib.backends.backend_tkagg as tkagg
 from matplotlib.figure import Figure
+import matplotlib.colors as mcolors
 import nidaqmx
 import nidaqmx.constants as nico
 from nidaqmx.stream_readers import AnalogMultiChannelReader
 
 
 __author__ = "Jaimy Plugge"
+
+
+# Obtain matplotlib colors
+color_view = mcolors.TABLEAU_COLORS.values()
+color_dict = dict(zip(range(len(color_view)-2), color_view))
+
+
+class onofflabel(tk.Label):
+    def __init__(self, master, textvariable, active_color, command):
+        super().__init__(master=master, width=10, textvariable=textvariable)
+        self.bind("<Button-1>", lambda event: self.toggle(event))
+        self.bind("<Enter>", lambda event: self.hover(event))
+        self.bind("<Leave>", lambda event: self.leave_hover(event))
+
+        self.value = False
+        self.active_color = active_color
+        self.command = command
+
+    def toggle(self, event=None):
+        self.value = not self.value
+        if self.value:
+            self.configure(background=self.active_color)
+        else:
+            self.configure(background="SystemButtonFace")
+        if self.command is not None:
+            self.command()
+
+    def hover(self, event):
+        self.configure(relief="solid")
+
+    def leave_hover(self, event):
+        self.configure(relief="flat")
 
 
 class Picker(ttk.Frame):
@@ -60,7 +93,7 @@ class Picker(ttk.Frame):
 
 
 class Combopicker(ttk.Entry, Picker):
-    def __init__(self, master, values= [] ,entryvar=None, entrywidth=None, entrystyle=None, onselect=None,activebackground='#b1dcfb', activeforeground='black', selectbackground='#003eff', selectforeground='white', borderwidth=1, relief="solid"):
+    def __init__(self, master, values= [] ,entryvar=None, entrywidth=None, entrystyle=None, onselect=None,activebackground='#b1dcfb', activeforeground='black', selectbackground='#003eff', selectforeground='white', borderwidth=1, relief="solid", command=None):
 
         if entryvar is not None:
             self.entry_var = entryvar
@@ -73,6 +106,8 @@ class Combopicker(ttk.Entry, Picker):
 
         if entrystyle is not None:
             entry_config["style"] = entrystyle
+
+        self.command = command
 
         ttk.Entry.__init__(self, master, textvariable=self.entry_var, **entry_config, state = "readonly")
 
@@ -119,6 +154,8 @@ class Combopicker(ttk.Entry, Picker):
                 temp_value += str(item)
 
         self.entry_var.set(temp_value)
+        if self.command is not None:
+            self.command()
 
     def _on_click(self, event):
         str_widget = str(event.widget)
@@ -276,7 +313,7 @@ class Mainwindow:
         controlsframe = ttk.LabelFrame(self.mainwindow, 
                                        labelwidget=controlsframelabel, 
                                        relief=self.relief)
-        controlsframe.pack(side="left")
+        controlsframe.grid(row=0,column=0,sticky="nsew")
 
         lbl_tdms_folder = tk.Label(master=controlsframe, text="TDMS Folder")
         self.entry_tdms_folder = tk.Entry(master=controlsframe, 
@@ -309,7 +346,9 @@ class Mainwindow:
         self.combo_phys_chan = Combopicker(master=controlsframe, 
                                            values =self.channellist, 
                                            entryvar=self.phys_chans,
-                                           entrywidth=25)
+                                           entrywidth=25,
+                                           command=self.add_plot_toggles)
+        self.combo_phys_chan.picker_frame.dict_checkbutton[self.channellist[0]].invoke()
 
         # self.combo_phys_chan = ttk.Combobox(master=controlsframe, 
         #                                     values=self.channellist, 
@@ -356,6 +395,15 @@ class Mainwindow:
         combo_termconfig.set(self.termconfigvar.get())
         combo_termconfig['state'] = 'readonly'
 
+        lbl_fft = tk.Label(master=controlsframe,
+                           text="Show fft")
+
+        self.fft_var = tk.BooleanVar()
+        self.fft_var.set(False)
+        checkbtn_fft = tk.Checkbutton(master=controlsframe,
+                                      variable=self.fft_var,
+                                      command=self.toggle_fft)
+
         self.btn_logging = tk.Button(master=controlsframe, text="Logging", 
                                      command=self.logging_toggle, 
                                      bg="red")
@@ -386,6 +434,8 @@ class Mainwindow:
         entry_sample_rate.grid(row=4,column=4,sticky="nsew",padx=xpad,pady=ypad)
         lbl_termconfig.grid(row=5,column=0,sticky="e",padx=xpad,pady=ypad)
         combo_termconfig.grid(row=5,column=1,sticky="nsew",padx=xpad,pady=ypad)
+        lbl_fft.grid(row=5,column=3,sticky="nsew",padx=xpad,pady=ypad)
+        checkbtn_fft.grid(row=5,column=4,sticky="nsew",padx=xpad,pady=ypad)
 
         self.btn_logging.grid(row=6,column=0,sticky="nsew",padx=xpad,pady=ypad)
         self.btn_start.grid(row=6,column=1,sticky="nsew",padx=xpad,pady=ypad)
@@ -394,21 +444,73 @@ class Mainwindow:
     def plot_frame(self):
         dataframelabel = ttk.Label(text="Data written to TDMS", 
                                    foreground="black")
-        dataframe = ttk.LabelFrame(self.mainwindow, labelwidget=dataframelabel, 
+        self.dataframe = ttk.LabelFrame(self.mainwindow, labelwidget=dataframelabel, 
                                    relief=self.relief)
-        dataframe.pack(expand=True, fill="both", side="right")
+        self.dataframe.grid(row=0,column=1,sticky="nsew")
+        canvasframe = tk.Frame(master=self.dataframe)
+        canvasframe.grid(row=0, column=0, sticky="nsew")
 
         self.fig = Figure(figsize=(12,3), tight_layout=True)
         self.axs = self.fig.add_subplot(111)
-        self.axs.set_xlabel('Time [s]')
-        self.axs.set_ylabel('Amplitude [V]')
-        self.axs.grid()
 
-        self.canvas = tkagg.FigureCanvasTkAgg(self.fig, master=dataframe)
+        self.canvas = tkagg.FigureCanvasTkAgg(self.fig, master=canvasframe)
         self.canvas.draw()
         self.canvas.get_tk_widget().pack(expand=True, fill="both", side="top")
 
-        self.navtoolbar = tkagg.NavigationToolbar2Tk(self.canvas, dataframe)
+        self.toggle_frame = tk.Frame(master=self.dataframe)
+        self.toggle_frame.grid(row=0,column=1,sticky="nsew")
+        self.add_plot_toggles()
+
+        self.navtoolbar = tkagg.NavigationToolbar2Tk(self.canvas, canvasframe)
+
+    def add_plot_toggles(self):
+        try:
+            self.toggle_frame.grid_forget()
+            self.toggle_frame.destroy()
+            self.toggle_frame = tk.Frame(master=self.dataframe)
+            self.toggle_frame.grid(row=0,column=1,sticky="nsew")
+            self.toggle_dict = {}
+            self.line_dict = {}
+            self.axs.cla()
+
+            for i, chan in enumerate(self.phys_chans.get().split(",")):
+                self.toggle_dict[i] = onofflabel(master=self.toggle_frame, 
+                                                 textvariable=tk.StringVar(value=chan), 
+                                                 active_color=color_dict[i], 
+                                                 command=None)
+                self.toggle_dict[i].toggle()
+                self.toggle_dict[i].pack()
+                self.line_dict[i], = self.axs.plot([], [])
+                
+            self.axs.set_xlabel('Time [s]')
+            self.axs.set_ylabel('Amplitude [V]')
+            self.axs.grid()
+        except AttributeError:
+            pass
+
+    def add_fft_toggles(self):
+        try:
+            self.ffttoggle_frame.grid_forget()
+            self.ffttoggle_frame.destroy()
+            self.ffttoggle_frame = tk.Frame(master=self.fftframe)
+            self.ffttoggle_frame.grid(row=0,column=1,sticky="nsew")
+            self.ffttoggle_dict = {}
+            self.fftline_dict = {}
+            self.fftaxs.cla()
+
+            for i, chan in enumerate(self.phys_chans.get().split(",")):
+                self.ffttoggle_dict[i] = onofflabel(master=self.ffttoggle_frame, 
+                                                 textvariable=tk.StringVar(value=chan), 
+                                                 active_color=color_dict[i], 
+                                                 command=None)
+                self.ffttoggle_dict[i].toggle()
+                self.ffttoggle_dict[i].pack()
+                self.fftline_dict[i], = self.fftaxs.plot([], [])
+                
+            self.fftaxs.set_xlabel('Frequency [Hz]')
+            self.fftaxs.set_ylabel(r'Amplitude [V/$\sqrt{Hz}$]')
+        except AttributeError:
+            pass
 
     def openfolder(self):
         self.folder = tk.filedialog.askdirectory()
@@ -475,6 +577,40 @@ class Mainwindow:
             self.multichan = True
             self.combo_phys_chan['state'] = 'normal'
 
+    def toggle_fft(self):
+        if self.fft_var.get():
+            fftframelabel = ttk.Label(text="FFT Plot", foreground="black")
+            self.fftframe = ttk.LabelFrame(self.mainwindow, labelwidget=fftframelabel, 
+                                           relief=self.relief)
+            self.fftframe.grid(row=1,column=1,sticky="nsew")
+            fftcanvasframe = tk.Frame(master=self.fftframe)
+            fftcanvasframe.grid(row=0, column=0, sticky="nsew")
+
+            self.fftfig = Figure(figsize=(12,3), tight_layout=True)
+            self.fftaxs = self.fftfig.add_subplot(111)
+            self.fftaxs.set_xlabel('Frequency [Hz]')
+            self.fftaxs.set_ylabel(r'Amplitude [V/$\sqrt{Hz}$]')
+            self.fftaxs.set_xscale('log')
+            self.fftaxs.set_yscale('log')
+
+            self.fftaxs.grid()
+
+            self.fftcanvas = tkagg.FigureCanvasTkAgg(self.fftfig, master=fftcanvasframe)
+            self.fftcanvas.draw()
+            self.fftcanvas.get_tk_widget().pack()
+
+            self.ffttoggle_frame = tk.Frame(master=self.fftframe)
+            self.ffttoggle_frame.grid(row=0,column=1,sticky="nsew")
+            self.add_fft_toggles()
+
+            self.fftnavtoolbar = tkagg.NavigationToolbar2Tk(self.fftcanvas, 
+                                                            fftcanvasframe)
+
+        else:
+            self.fftframe.grid_forget()
+            self.fftframe.destroy()
+
+
     def logging_toggle(self):
         if self.logging:
             self.btn_logging.config(bg="red")
@@ -498,14 +634,35 @@ class Mainwindow:
             self.reader.data_in, 
             number_of_samples_per_channel=self.reader.settings["sample block size"], 
             timeout=nidaqmx.constants.WAIT_INFINITELY)
-        self.axs.cla()
-        for row in self.reader.data_in:
-            self.axs.plot(self.x_axis, row)
-        self.axs.set_xlabel('Time [s]')
-        self.axs.set_ylabel('Amplitude [V]')
-        self.axs.grid()
+        for i, row in enumerate(self.reader.data_in):
+            self.line_dict[i].set_data(self.x_axis, row)
+            self.line_dict[i].set_visible(self.toggle_dict[i].value)
+        self.axs.redraw_in_frame()
+        self.axs.relim(visible_only=True)
+        self.axs.autoscale(axis="both")
         self.canvas.draw()
         self.navtoolbar.update()
+
+        if self.fft_var.get():
+            samp_rate = self.int_from_str(self.sample_rate.get())
+            samp_chan = self.int_from_str(self.sample_chan.get())
+            freqs = np.fft.fftfreq(samp_chan, d=1/samp_rate) # x-as
+            window = np.hanning(samp_chan)
+            windowdata = self.reader.data_in * window
+            freq_res = samp_rate/samp_chan
+            fft = np.fft.fft(windowdata)[:,(freqs>=0)] * 1.63 / (samp_chan*np.sqrt(freq_res))
+            freqs = freqs[(freqs>=0)]
+            for i, row in enumerate(fft):
+                self.fftline_dict[i].set_data(freqs, np.abs(row))
+                self.fftline_dict[i].set_visible(self.ffttoggle_dict[i].value)
+            self.fftaxs.set_xscale('log')
+            self.fftaxs.set_yscale('log')
+            self.fftaxs.redraw_in_frame()
+            self.fftaxs.relim(visible_only=True)
+            self.fftaxs.autoscale(axis="both")
+            self.fftcanvas.draw()
+            self.fftnavtoolbar.update()
+
         if self.logging:
             self.amount_samples_var.set(self.amount_samples_var.get() 
                                         + self.int_from_str(self.sample_rate.get()))
